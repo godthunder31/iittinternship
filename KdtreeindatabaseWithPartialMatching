@@ -1,0 +1,93 @@
+import os
+import cv2
+from sqlalchemy import create_engine, text, MetaData
+import pickle
+import numpy as np
+from scipy.spatial import KDTree
+import matplotlib.pyplot as plt
+
+def binarize_image(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    resized_img = cv2.resize(gray, (int(0.25 * width), int(0.25 * height)))
+    equalized_image = cv2.equalizeHist(resized_img)
+    _, bin_image = cv2.threshold(equalized_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return bin_image
+
+def extract_keypoints_and_descriptors(image):
+    orb = cv2.ORB_create()
+    keypoints, descriptors = orb.detectAndCompute(image,None)
+    return keypoints, descriptors
+
+# Connect to SQLite database
+engine = create_engine("sqlite:///demo.sqlite")
+connection = engine.connect()
+metadata = MetaData()
+
+# Reflect tables from the existing database
+metadata.reflect(bind=engine)
+
+# Retrieve all records from table 'data'
+if 'data' in metadata.tables:
+    data_table = metadata.tables['data']
+    data_query = text('select * from data')
+    data_result = connection.execute(query_data).fetchall()
+
+# Retrieve the KD-Tree from table 'kd_tree'
+if 'kd_tree' in metadata.tables:
+    kd_tree_table = metadata.tables['kd_tree']
+    query_kd_tree = text('select * from kd_tree')  # Assuming KD-Tree ID is 0
+    result_kd_tree = connection.execute(query_kd_tree).fetchall()
+
+# Load descriptors and indices
+desc_list = []
+index_list = []
+for index, samp in enumerate(data_result):
+    if samp[2] is not None:
+        x = pickle.loads(samp[2])
+        desc_list.append(x)
+        index_list.extend([index] * x.shape[0])
+    else:
+        print(f"Descriptors not found for image: {samp[0]}")
+
+# Load KD-Tree
+kd_tree = pickle.loads(result_kd_tree[0][1])
+
+# Query image path
+query_image_path = 'C:/testforinscriptions/dataset/images/26.jpg'
+query_image = cv2.imread(query_image_path, cv2.IMREAD_GRAYSCALE)
+
+# Binarize query image
+# binarized_query = binarize_image(query_image)
+
+# Extract FAST keypoints and SIFT descriptors from binarized query image
+keypoints, query_descriptors = extract_keypoints_and_descriptors(query_image)
+print(len(query_descriptors))
+
+# Query KD-Tree for nearest neighbors
+distances, indices = kd_tree.query(query_descriptors, k=2) # Querying for 2 nearest neighbors
+match_counts = {}
+# Display and process all matched images
+displayed_indices = set()  # To track displayed indices
+for i, (m, n) in enumerate(zip(distances[:, 0], distances[:, 1])):
+    if m < 0.3 * n:  # Lowe's ratio test
+       for idx in indices[i]:
+        db_index = index_list[idx]
+        if db_index not in displayed_indices:  # Check if already displayed
+            displayed_indices.add(db_index)
+        
+            z = np.frombuffer(result_a[db_index][1], np.uint8)
+            matched_img = cv2.imdecode(z, cv2.IMREAD_COLOR)
+            print("Matched Image Index:", db_index)
+            
+            # Convert BGR image to RGB
+            matched_img_rgb = cv2.cvtColor(matched_img, cv2.COLOR_BGR2RGB)
+            
+            plt.figure()
+            plt.imshow(matched_img_rgb)
+            plt.title(f"Matched Image Index: {db_index}")
+            plt.axis('off')
+            plt.show()
+
+# Close the database connection
+connection.close()
