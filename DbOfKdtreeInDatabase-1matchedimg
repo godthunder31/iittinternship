@@ -1,0 +1,105 @@
+import os
+import cv2
+from sqlalchemy import create_engine, Table, Column, LargeBinary, Integer, Text, MetaData, insert
+import pickle
+import numpy as np
+from scipy.spatial import KDTree
+
+# Function to list all image paths in the given folder
+def list_of_image_paths(folder_path):
+    image_list = []
+    for filename in os.listdir(folder_path):
+        if filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.PNG', '.JPG', '.JPEG', '.WEBP')):
+            image_list.append(os.path.join(folder_path, filename))
+    return image_list
+
+# Function to extract descriptors from the image using SIFT
+def extract_descriptors(image):
+    orb = cv2.ORB_create()
+    keypoints, descriptors = orb.detectAndCompute(image,None)
+    return descriptors
+
+# Function to binarize the image
+def binarized_image(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    height, width = img.shape[:2]
+    resized_img = cv2.resize(img, (int(0.25 * width), int(0.25 * height)))
+    equalized_image = cv2.equalizeHist(resized_img)
+    _, bin_image = cv2.threshold(equalized_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return bin_image
+
+# Main folder path for images
+folder_path = 'C:/testforinscriptions/dataset/images'
+image_list = list_of_image_paths(folder_path)
+
+# Create and connect to the SQLite database
+engine = create_engine("sqlite:///demo.sqlite")
+connection = engine.connect()
+metadata = MetaData()
+
+# Define the table schema for storing images and descriptors
+sample = Table('data', metadata,
+               Column('id', Integer, primary_key=True),
+               Column('Image_data', LargeBinary),
+               Column('Descriptors', LargeBinary),
+
+               )
+
+# Define the table schema for storing the KD-Tree
+kd_tree_table = Table('kd_tree', metadata,
+                      Column('id', Integer, primary_key=True),
+                      Column('KDTree', LargeBinary))
+
+# Create the tables
+metadata.create_all(engine)
+metadata.reflect(bind=engine)
+
+# Check if the 'a' table exists and proceed with insertion
+if 'data' in metadata.tables:
+    data_table = metadata.tables['data']
+    op = insert(data_table)
+    records = []
+    all_descriptors = []
+
+    # Process each image and extract descriptors
+    for index, convertor in enumerate(image_list):
+        word_splitter = os.path.splitext(convertor)[1].lower()
+        img = cv2.imread(convertor,cv2.IMREAD_GRAYSCALE)
+
+        descriptors = extract_descriptors(img)
+        if descriptors is not None:
+            all_descriptors.append(descriptors)
+
+            descriptors_bytes = pickle.dumps(descriptors)
+
+            _, image_bin_for = cv2.imencode(word_splitter, img)
+            image_bytes = image_bin_for.tobytes()
+            temp1 = {'id': index, 'Image_data': image_bytes, 'Descriptors': descriptors_bytes}
+            records.append(temp1)
+            
+    # Insert image records into the database
+    if records:
+        connection.execute(op, records)
+        print("Rows Inserted")
+
+    # Construct and insert the KD-Tree into the database
+    if all_descriptors:
+        all_descriptors = np.vstack(all_descriptors)
+
+        # Construct the KD-Tree
+        kd_tree = KDTree(all_descriptors)
+
+        # Serialize the KD-Tree
+        kd_tree_bytes = pickle.dumps(kd_tree)
+
+        # Insert the KD-Tree into its table
+        op = insert(kd_tree_table)
+        connection.execute(op, [{'id': 0, 'KDTree': kd_tree_bytes}])
+        print("KD-Tree Inserted")
+
+else:
+    print("There is no such table")
+
+# Commit the transaction and close the connection
+connection.commit()
+connection.close()
